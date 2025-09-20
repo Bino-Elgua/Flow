@@ -1,0 +1,2 @@
+# Monitoring manifests for Prometheus, Grafana, and Alertmanager
+# This directory contains the monitoring stack deployment files

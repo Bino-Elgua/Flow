@@ -1,0 +1,18 @@
+FROM redis:7-alpine
+
+# Create redis user and directories
+RUN mkdir -p /data && \
+    chown -R redis:redis /data
+
+# Copy custom configuration if needed
+# COPY redis.conf /usr/local/etc/redis/redis.conf
+
+# Expose port
+EXPOSE 6379
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD redis-cli ping || exit 1
+
+# Start Redis with custom configuration
+CMD ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]

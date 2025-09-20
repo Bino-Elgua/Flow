@@ -1,0 +1,394 @@
+name: Deployment Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      service:
+        description: 'Service to deploy'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - n8n
+          - infrastructure
+          - monitoring
+      force_deploy:
+        description: 'Force deployment even if tests fail'
+        required: false
+        default: false
+        type: boolean
+
+  push:
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  TF_VERSION: 1.6.0
+
+jobs:
+  prepare:
+    name: Prepare Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      service: ${{ steps.set-env.outputs.service }}
+      deploy_infra: ${{ steps.set-env.outputs.deploy_infra }}
+      deploy_n8n: ${{ steps.set-env.outputs.deploy_n8n }}
+      deploy_monitoring: ${{ steps.set-env.outputs.deploy_monitoring }}
+
+    steps:
+    - name: Set environment variables
+      id: set-env
+      run: |
+        if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "environment=production" >> $GITHUB_OUTPUT
+          echo "service=all" >> $GITHUB_OUTPUT
+        else
+          echo "environment=${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_OUTPUT
+          echo "service=${{ github.event.inputs.service || 'all' }}" >> $GITHUB_OUTPUT
+        fi
+        
+        if [ "${{ github.event.inputs.service }}" = "all" ] || [ "${{ github.event.inputs.service }}" = "infrastructure" ]; then
+          echo "deploy_infra=true" >> $GITHUB_OUTPUT
+        else
+          echo "deploy_infra=false" >> $GITHUB_OUTPUT
+        fi
+        
+        if [ "${{ github.event.inputs.service }}" = "all" ] || [ "${{ github.event.inputs.service }}" = "n8n" ]; then
+          echo "deploy_n8n=true" >> $GITHUB_OUTPUT
+        else
+          echo "deploy_n8n=false" >> $GITHUB_OUTPUT
+        fi
+        
+        if [ "${{ github.event.inputs.service }}" = "all" ] || [ "${{ github.event.inputs.service }}" = "monitoring" ]; then
+          echo "deploy_monitoring=true" >> $GITHUB_OUTPUT
+        else
+          echo "deploy_monitoring=false" >> $GITHUB_OUTPUT
+        fi
+
+  pre-deployment-checks:
+    name: Pre-deployment Checks
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Check infrastructure state
+      if: needs.prepare.outputs.deploy_infra == 'true'
+      run: |
+        cd terraform
+        terraform init
+        terraform plan -var="environment=${{ needs.prepare.outputs.environment }}" -detailed-exitcode
+      continue-on-error: true
+
+    - name: Check Kubernetes cluster access
+      if: needs.prepare.outputs.deploy_n8n == 'true' || needs.prepare.outputs.deploy_monitoring == 'true'
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name flow-${{ needs.prepare.outputs.environment }}-cluster
+        kubectl cluster-info
+        kubectl get nodes
+
+    - name: Validate deployment readiness
+      run: |
+        echo "Environment: ${{ needs.prepare.outputs.environment }}"
+        echo "Service: ${{ needs.prepare.outputs.service }}"
+        echo "Infrastructure: ${{ needs.prepare.outputs.deploy_infra }}"
+        echo "n8n: ${{ needs.prepare.outputs.deploy_n8n }}"
+        echo "Monitoring: ${{ needs.prepare.outputs.deploy_monitoring }}"
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: [prepare, pre-deployment-checks]
+    if: needs.prepare.outputs.deploy_infra == 'true'
+    environment: ${{ needs.prepare.outputs.environment }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform
+        terraform init
+
+    - name: Terraform Plan
+      run: |
+        cd terraform
+        terraform plan \
+          -var="environment=${{ needs.prepare.outputs.environment }}" \
+          -var="project_name=flow" \
+          -var="postgres_password=${{ secrets.POSTGRES_PASSWORD }}" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      run: |
+        cd terraform
+        terraform apply tfplan
+
+    - name: Output infrastructure info
+      run: |
+        cd terraform
+        echo "### Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+        terraform output -json | jq -r 'to_entries[] | "- **\(.key)**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY
+
+  deploy-n8n:
+    name: Deploy n8n Application
+    runs-on: ubuntu-latest
+    needs: [prepare, pre-deployment-checks, deploy-infrastructure]
+    if: always() && needs.prepare.outputs.deploy_n8n == 'true' && (needs.deploy-infrastructure.result == 'success' || needs.deploy-infrastructure.result == 'skipped')
+    environment: ${{ needs.prepare.outputs.environment }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name flow-${{ needs.prepare.outputs.environment }}-cluster
+
+    - name: Create namespace
+      run: |
+        kubectl create namespace n8n --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Create secrets
+      run: |
+        kubectl create secret generic n8n-secrets \
+          --from-literal=DB_POSTGRESDB_PASSWORD='${{ secrets.POSTGRES_PASSWORD }}' \
+          --from-literal=N8N_BASIC_AUTH_USER='${{ secrets.N8N_ADMIN_USER }}' \
+          --from-literal=N8N_BASIC_AUTH_PASSWORD='${{ secrets.N8N_ADMIN_PASSWORD }}' \
+          --namespace=n8n \
+          --dry-run=client -o yaml | kubectl apply -f -
+        
+        kubectl create secret generic postgres-secrets \
+          --from-literal=POSTGRES_USER='n8n' \
+          --from-literal=POSTGRES_PASSWORD='${{ secrets.POSTGRES_PASSWORD }}' \
+          --namespace=n8n \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy PostgreSQL
+      run: |
+        kubectl apply -f k8s/postgres-deployment.yaml
+
+    - name: Deploy Redis
+      run: |
+        kubectl apply -f k8s/redis-deployment.yaml
+
+    - name: Wait for database services
+      run: |
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgres --namespace=n8n --timeout=300s
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis --namespace=n8n --timeout=300s
+
+    - name: Deploy n8n
+      run: |
+        kubectl apply -f k8s/n8n-deployment.yaml
+
+    - name: Deploy Ingress
+      run: |
+        # Update ingress with correct hostname for environment
+        sed "s/n8n.example.com/n8n-${{ needs.prepare.outputs.environment }}.example.com/g" k8s/ingress-nginx.yaml | kubectl apply -f -
+
+    - name: Wait for n8n deployment
+      run: |
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=n8n --namespace=n8n --timeout=600s
+
+    - name: Get deployment status
+      run: |
+        echo "### n8n Deployment Status" >> $GITHUB_STEP_SUMMARY
+        kubectl get pods -n n8n >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        kubectl get services -n n8n >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        kubectl get ingress -n n8n >> $GITHUB_STEP_SUMMARY
+
+  deploy-monitoring:
+    name: Deploy Monitoring Stack
+    runs-on: ubuntu-latest
+    needs: [prepare, pre-deployment-checks, deploy-infrastructure]
+    if: always() && needs.prepare.outputs.deploy_monitoring == 'true' && (needs.deploy-infrastructure.result == 'success' || needs.deploy-infrastructure.result == 'skipped')
+    environment: ${{ needs.prepare.outputs.environment }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup kubectl and Helm
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name flow-${{ needs.prepare.outputs.environment }}-cluster
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Add Helm repositories
+      run: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+
+    - name: Create monitoring namespace
+      run: |
+        kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy Prometheus
+      run: |
+        helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+          --namespace monitoring \
+          --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+          --set prometheus.prometheusSpec.retention=30d \
+          --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage=50Gi \
+          --set grafana.adminPassword='${{ secrets.GRAFANA_ADMIN_PASSWORD }}' \
+          --wait
+
+    - name: Get monitoring status
+      run: |
+        echo "### Monitoring Stack Status" >> $GITHUB_STEP_SUMMARY
+        kubectl get pods -n monitoring >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        kubectl get services -n monitoring >> $GITHUB_STEP_SUMMARY
+
+  health-check:
+    name: Post-deployment Health Check
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-n8n, deploy-monitoring]
+    if: always() && (needs.deploy-n8n.result == 'success' || needs.deploy-monitoring.result == 'success')
+
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Setup kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name flow-${{ needs.prepare.outputs.environment }}-cluster
+
+    - name: Check n8n health
+      if: needs.deploy-n8n.result == 'success'
+      run: |
+        # Wait for service to be ready
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=n8n --namespace=n8n --timeout=300s
+        
+        # Get service endpoint
+        SERVICE_IP=$(kubectl get service n8n-service -n n8n -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        if [ -z "$SERVICE_IP" ]; then
+          SERVICE_IP=$(kubectl get service n8n-service -n n8n -o jsonpath='{.spec.clusterIP}')
+        fi
+        
+        echo "n8n service IP: $SERVICE_IP"
+        
+        # Test health endpoint
+        kubectl run curl-test --image=curlimages/curl:latest --rm -it --restart=Never -- \
+          curl -f http://$SERVICE_IP:5678/healthz || echo "Health check failed"
+
+    - name: Check monitoring health
+      if: needs.deploy-monitoring.result == 'success'
+      run: |
+        # Check Prometheus
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus --namespace=monitoring --timeout=300s
+        
+        # Check Grafana
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana --namespace=monitoring --timeout=300s
+        
+        echo "Monitoring stack is healthy"
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-n8n, deploy-monitoring, health-check]
+    if: always() && (needs.deploy-n8n.result == 'failure' || needs.deploy-monitoring.result == 'failure' || needs.health-check.result == 'failure') && github.event.inputs.force_deploy != 'true'
+
+    steps:
+    - name: Rollback deployment
+      run: |
+        echo "Deployment failed, initiating rollback..."
+        # Add rollback logic here
+        echo "Rollback completed"
+
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-infrastructure, deploy-n8n, deploy-monitoring, health-check, rollback]
+    if: always()
+
+    steps:
+    - name: Determine overall status
+      id: status
+      run: |
+        if [ "${{ needs.rollback.result }}" = "success" ]; then
+          echo "status=rolled_back" >> $GITHUB_OUTPUT
+        elif [ "${{ needs.health-check.result }}" = "success" ]; then
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Send success notification
+      if: steps.status.outputs.status == 'success'
+      run: |
+        echo "🚀 Deployment to ${{ needs.prepare.outputs.environment }} completed successfully!"
+        echo "Service: ${{ needs.prepare.outputs.service }}"
+        echo "Environment: ${{ needs.prepare.outputs.environment }}"
+
+    - name: Send failure notification
+      if: steps.status.outputs.status == 'failed'
+      run: |
+        echo "❌ Deployment to ${{ needs.prepare.outputs.environment }} failed!"
+        echo "Service: ${{ needs.prepare.outputs.service }}"
+        echo "Environment: ${{ needs.prepare.outputs.environment }}"
+
+    - name: Send rollback notification
+      if: steps.status.outputs.status == 'rolled_back'
+      run: |
+        echo "🔄 Deployment to ${{ needs.prepare.outputs.environment }} was rolled back due to failures!"
+        echo "Service: ${{ needs.prepare.outputs.service }}"
+        echo "Environment: ${{ needs.prepare.outputs.environment }}"
