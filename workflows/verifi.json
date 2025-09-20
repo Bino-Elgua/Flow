@@ -1,8 +1,311 @@
 {
   "name": "verifi",
-  "nodes": [],
-  "connections": {},
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook",
+        "options": {
+          "allowedOrigins": "https://example.com",
+          "ignoreBots": true
+        }
+      },
+      "id": "73e6d3b4-3e20-4e52-be9e-f2a8e65b7c4f",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "🔑WEBHOOK_ID_PLACEHOLDER🔑"
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "url": "🔑API_ENDPOINT_PLACEHOLDER🔑",
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "enabled": true,
+            "maxRetries": 3
+          }
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Authorization",
+              "value": "Bearer 🔑API_TOKEN_PLACEHOLDER🔑"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "id": "a8f92d5e-7b3c-4f61-9e8a-2d6b8c4e5f7a",
+      "name": "API_Verification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c9a8e7f6-5d4b-3c2a-1e0f-9b8c7d6e5f4a",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "verified",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "d5e4f3c2-1b0a-9e8d-7c6b-5a4f3e2d1c0b",
+      "name": "Verification_Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "insert",
+        "schema": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.transaction_id }}",
+            "status": "verified",
+            "timestamp": "={{ new Date().toISOString() }}",
+            "signature": "🔑SIGNATURE_PLACEHOLDER🔑",
+            "metadata": "={{ $json }}"
+          }
+        }
+      },
+      "id": "b7c6d5e4-f3a2-1e0d-9c8b-7a6f5e4d3c2b",
+      "name": "Store_Verification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [900, 240],
+      "credentials": {
+        "postgres": {
+          "id": "🔑POSTGRES_CREDENTIAL_ID🔑",
+          "name": "PostgreSQL Production"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "chatId": "🔑TELEGRAM_CHAT_ID🔑",
+        "text": "✅ Verification successful for transaction: {{ $json.transaction_id }}\n\nStatus: {{ $json.status }}\nTimestamp: {{ new Date().toLocaleString() }}\nSignature: {{ $json.signature }}"
+      },
+      "id": "f8e7d6c5-b4a3-2f1e-0d9c-8b7a6f5e4d3c",
+      "name": "Success_Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1120, 180],
+      "credentials": {
+        "telegramApi": {
+          "id": "🔑TELEGRAM_CREDENTIAL_ID🔑",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "email",
+        "operation": "send",
+        "message": {
+          "to": "🔑ALERT_EMAIL_PLACEHOLDER🔑",
+          "subject": "❌ Verification Failed - Flow Alert",
+          "body": "Verification failed for the following request:\n\nTransaction ID: {{ $json.transaction_id || 'Unknown' }}\nReason: {{ $json.error || 'Verification criteria not met' }}\nTimestamp: {{ new Date().toLocaleString() }}\n\nPlease investigate immediately.",
+          "attachments": []
+        }
+      },
+      "id": "e6d5c4b3-a2f1-0e9d-8c7b-6a5f4e3d2c1b",
+      "name": "Failure_Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [900, 360],
+      "credentials": {
+        "smtp": {
+          "id": "🔑SMTP_CREDENTIAL_ID🔑",
+          "name": "SMTP Server"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "log",
+        "level": "error",
+        "message": "Verification failed: {{ $json.error || 'Unknown error' }}",
+        "additionalFields": {
+          "metadata": {
+            "transaction_id": "={{ $json.transaction_id }}",
+            "timestamp": "={{ new Date().toISOString() }}",
+            "workflow_execution_id": "={{ $execution.id }}",
+            "webhook_data": "={{ $json }}"
+          }
+        }
+      },
+      "id": "c4b3a2f1-0e9d-8c7b-6a5f-4e3d2c1b0a9e",
+      "name": "Error_Logging",
+      "type": "n8n-nodes-base.n8n",
+      "typeVersion": 1,
+      "position": [1120, 360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "🔑REDIS_ENDPOINT🔑/set",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "httpHeaderAuth": "🔑REDIS_AUTH_CREDENTIAL🔑",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "verification:{{ $json.transaction_id }}"
+            },
+            {
+              "name": "value",
+              "value": "{{ JSON.stringify($json) }}"
+            },
+            {
+              "name": "ttl",
+              "value": "3600"
+            }
+          ]
+        }
+      },
+      "id": "a9e8d7c6-b5f4-3e2d-1c0b-9a8e7d6c5b4f",
+      "name": "Cache_Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1120, 240]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "API_Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API_Verification": {
+      "main": [
+        [
+          {
+            "node": "Verification_Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verification_Check": {
+      "main": [
+        [
+          {
+            "node": "Store_Verification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure_Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store_Verification": {
+      "main": [
+        [
+          {
+            "node": "Success_Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cache_Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure_Alert": {
+      "main": [
+        [
+          {
+            "node": "Error_Logging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
   "active": true,
-  "settings": {},
-  "id": "verifi-workflow"
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "🔑ERROR_WORKFLOW_ID🔑",
+    "timezone": "UTC"
+  },
+  "staticData": {
+    "global": {
+      "version": "1.0.0",
+      "description": "Enterprise verification workflow with comprehensive error handling and monitoring",
+      "last_updated": "2024-01-01T00:00:00.000Z"
+    }
+  },
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "verification",
+      "name": "verification"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "enterprise",
+      "name": "enterprise"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "production",
+      "name": "production"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "🔑WORKFLOW_VERSION_ID🔑",
+  "id": "🔑WORKFLOW_ID🔑",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "🔑N8N_INSTANCE_ID🔑"
+  }
 }
