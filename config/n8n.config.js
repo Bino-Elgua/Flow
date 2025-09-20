@@ -21,10 +21,9 @@ const config = {
         port: parseInt(process.env.QUEUE_BULL_REDIS_PORT) || 6379,
         password: process.env.QUEUE_BULL_REDIS_PASSWORD || '',
         db: parseInt(process.env.QUEUE_BULL_REDIS_DB) || 0,
-        maxRetriesPerRequest: 3,
+        maxRetriesPerRequest: null,
         retryDelayOnFailover: 100,
-        enableReadyCheck: false,
-        maxRetriesPerRequest: null
+        enableReadyCheck: false
       }
     }
   },
