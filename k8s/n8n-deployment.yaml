@@ -146,6 +146,10 @@ metadata:
     app.kubernetes.io/name: n8n
     app.kubernetes.io/component: workflow-engine
     app.kubernetes.io/part-of: flow
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "5678"
+    prometheus.io/path: "/metrics"
 spec:
   type: ClusterIP
   ports:
