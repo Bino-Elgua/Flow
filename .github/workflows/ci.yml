@@ -37,10 +37,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        npm install -g @n8n/cli
-        npm install -g eslint
-        npm install -g prettier
-        npm install -g yaml-validator
+        npm ci
+        npm install -g n8n
 
     - name: Validate JSON files
       run: |
@@ -48,11 +46,11 @@ jobs:
 
     - name: Validate YAML files
       run: |
-        find . -name "*.yml" -o -name "*.yaml" -not -path "./node_modules/*" -not -path "./.git/*" | xargs yaml-validator
+        find . -name "*.yml" -o -name "*.yaml" -not -path "./node_modules/*" -not -path "./.git/*" | xargs npx yaml-validator
 
     - name: Lint JavaScript files
       run: |
-        find . -name "*.js" -not -path "./node_modules/*" -not -path "./.git/*" | xargs eslint --ext .js
+        find . -name "*.js" -not -path "./node_modules/*" -not -path "./.git/*" | xargs npx eslint --ext .js
 
     - name: Validate n8n workflows
       run: |
@@ -210,9 +208,8 @@ jobs:
 
     - name: Install test dependencies
       run: |
-        npm install -g jest
-        npm install -g axios
-        npm install -g @n8n/cli
+        npm ci
+        npm install -g n8n
 
     - name: Run workflow tests
       run: |

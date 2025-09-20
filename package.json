@@ -1,0 +1,37 @@
+{
+  "name": "flow-workflow-automation",
+  "version": "1.0.0",
+  "description": "Enterprise-grade workflow automation platform built on n8n",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "validate:yaml": "yaml-validator",
+    "validate:workflows": "echo 'Validating n8n workflows'"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Bino-Elgua/Flow.git"
+  },
+  "keywords": [
+    "workflow",
+    "automation",
+    "n8n",
+    "enterprise",
+    "infrastructure"
+  ],
+  "author": "Bino-Elgua",
+  "license": "MIT",
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "yaml-validator": "^5.1.0",
+    "jest": "^29.7.0",
+    "axios": "^1.7.7"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  }
+}
