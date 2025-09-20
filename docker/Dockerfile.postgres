@@ -1,2 +1,24 @@
-# PostgreSQL Dockerfile
-# TODO: Implement PostgreSQL Docker configuration
+FROM postgres:15-alpine
+
+# Set environment variables
+ENV POSTGRES_DB=n8n
+ENV POSTGRES_USER=n8n
+ENV POSTGRES_PASSWORD=n8n_password
+ENV PGDATA=/var/lib/postgresql/data/pgdata
+
+# Create directories
+RUN mkdir -p /var/lib/postgresql/data && \
+    chown -R postgres:postgres /var/lib/postgresql/data
+
+# Copy initialization scripts if needed
+# COPY init-scripts/ /docker-entrypoint-initdb.d/
+
+# Expose port
+EXPOSE 5432
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD pg_isready -U $POSTGRES_USER -d $POSTGRES_DB || exit 1
+
+# Start PostgreSQL
+CMD ["postgres"]
